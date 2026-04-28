@@ -1,0 +1,102 @@
+service: log-tracing
+
+frameworkVersion: "3"
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: eu-west-1
+  stage: ${opt:stage, 'qa'}
+
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - sqs:SendMessage
+            - sqs:ReceiveMessage
+            - sqs:DeleteMessage
+            - sqs:GetQueueAttributes
+          Resource:
+            Fn::GetAtt:
+              - AddLogSQSQueue
+              - Arn
+
+        - Effect: Allow
+          Action:
+            - s3:GetObject
+          Resource:
+            - arn:aws:s3:::log-trace-qa/*
+
+        - Effect: Allow
+          Action:
+            - dynamodb:PutItem
+          Resource:
+            - arn:aws:dynamodb:eu-west-1:${aws:accountId}:table/logtrace-${self:provider.stage}
+
+  environment:
+    LOG_TRACE_DB: logtrace-${self:provider.stage}
+    LOG_TRACE_BUCKET: log-trace-qa
+    REGION : ${self:provider.region}
+            
+functions:
+  addLogQueue:
+    handler: src/handlers/log.handler
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - AddLogSQSQueue
+              - Arn
+          batchSize: 10
+
+resources:
+  Resources:
+
+    LogTraceTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain   # 🔥 Extra safety (won’t delete table if stack removed)
+      Properties:
+        TableName: logtrace-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
+
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+          - AttributeName: offerId
+            AttributeType: S
+          - AttributeName: stepCode
+            AttributeType: N
+          - AttributeName: hotelKey
+            AttributeType: S  
+
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+
+        GlobalSecondaryIndexes:
+          - IndexName: GSI_Offer_Step
+            KeySchema:
+              - AttributeName: offerId
+                KeyType: HASH
+              - AttributeName: stepCode
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+
+          - IndexName: GSI_Hotel_Step
+            KeySchema:
+              - AttributeName: hotelKey
+                KeyType: HASH
+              - AttributeName: stepCode
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL           
+
+    AddLogSQSQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: add-log-queue-${self:provider.stage}
+
+package:
+  individually: true
